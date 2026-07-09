@@ -26,6 +26,7 @@ export function Dashboard() {
   const invoicesByProperty = useMemo(() => {
     const m: Record<string, Invoice[]> = {}
     for (const i of invoices ?? []) {
+      if (!i.property_id) continue
       m[i.property_id] = m[i.property_id] ?? []
       m[i.property_id]!.push(i)
     }

@@ -1,22 +1,7 @@
 import { Link, useParams } from 'react-router-dom'
-import { KPIColumn, StatusChip, Table, type Column } from '../components/ui'
-import { PMAccessPanel } from '../components/PMAccessPanel'
+import { KPIColumn } from '../components/ui'
 import { useApi } from '../hooks/useApi'
 import type { PropertyDashboard as Dashboard } from '../api/types'
-
-type Loan = Dashboard['active_loans'][number]
-
-const LOAN_COLS: Column<Loan>[] = [
-  { key: 'lender', header: 'Lender', render: (l) => l.lender_name },
-  { key: 'bal', header: 'Balance', render: (l) => formatMoney(l.current_balance), align: 'right' },
-  { key: 'status', header: 'Status', render: (l) => <StatusChip tone="success">{l.status}</StatusChip> },
-]
-
-function formatMoney(v: string): string {
-  const n = Number(v)
-  if (Number.isNaN(n)) return v
-  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD' })
-}
 
 export function PropertyDashboard() {
   const { propertyId } = useParams<{ propertyId: string }>()
@@ -44,37 +29,13 @@ export function PropertyDashboard() {
           <Link to={`/properties/${p.id}/invoices`} className="hover:text-text">
             Invoices
           </Link>
-          <Link to={`/properties/${p.id}/draws`} className="hover:text-text">
-            Draws
-          </Link>
-          <Link to={`/properties/${p.id}/pay-app`} className="hover:text-text">
-            Pay App
-          </Link>
         </nav>
       </header>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-sp7 bg-surface-lowest border border-paper-200 rounded-3 p-sp7">
-        <KPIColumn label="Active loans" value={String(data.active_loans.length)} />
-        <KPIColumn
-          label="Budget total"
-          value={formatMoney(data.budget_summary.total_amount)}
-          hint={`${data.budget_summary.active_count} active`}
-        />
-        <KPIColumn label="Draws" value={String(data.draw_count)} />
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-sp7 bg-surface-lowest border border-paper-200 rounded-3 p-sp7">
+        <KPIColumn label="Open for review" value={String(data.open_review_count)} />
+        <KPIColumn label="Approved" value={String(data.approved_count)} />
       </div>
-
-      <div className="flex flex-col gap-sp3">
-        <h2 className="text-16 font-semi text-text">Active loans</h2>
-        <Table
-          columns={LOAN_COLS}
-          rows={data.active_loans}
-          rowKey={(l) => l.id}
-          caption="Active loans"
-          emptyState="No active loans."
-        />
-      </div>
-
-      <PMAccessPanel propertyId={p.id} />
     </section>
   )
 }

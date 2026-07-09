@@ -7,12 +7,9 @@ import type { Invoice } from '../api/types'
 
 const STATUS_TONE: Record<string, StatusTone> = {
   extraction_review: 'ai',
-  pending_approval: 'ready',
   approved: 'success',
   on_hold: 'attention',
   rejected: 'danger',
-  in_draw: 'info',
-  paid: 'success',
 }
 
 function money(v: string | null): string {

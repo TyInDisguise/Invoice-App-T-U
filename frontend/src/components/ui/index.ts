@@ -7,7 +7,6 @@ export { KPIColumn } from './KPIColumn'
 export { ToastProvider, useToast } from './Toast'
 export { Icon, type IconName } from './Icon'
 export { Modal } from './Modal'
-export { TokenLinkModal } from './TokenLinkModal'
 export { Dropdown, type DropdownItem } from './Dropdown'
 export { StatusChip, type StatusTone } from './StatusChip'
 export {

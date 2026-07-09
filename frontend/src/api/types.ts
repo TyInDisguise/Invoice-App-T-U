@@ -10,67 +10,126 @@ export interface Property {
   firm_id: string
   portfolio_id: string | null
   name: string
-  address_line1: string | null
-  city: string | null
-  state_region: string | null
-}
-
-export interface Loan {
-  id: string
-  firm_id: string
-  property_id: string
-  lender_name: string
-  loan_number: string | null
-  original_balance: string
-  current_balance: string
+  address_line1: string
+  address_line2: string | null
+  city: string
+  state_region: string
+  postal_code: string
+  country: string
+  property_type: string
   status: string
+  custom_fields: Record<string, unknown>
 }
 
 export interface PropertyDashboard {
   property: Property
-  active_loans: Array<{
-    id: string
-    lender_name: string
-    current_balance: string
-    status: string
-  }>
-  budget_summary: {
-    count: number
-    total_amount: string
-    active_count: number
-  }
-  draw_count: number
+  open_review_count: number
+  approved_count: number
+}
+
+export interface Portfolio {
+  id: string
+  firm_id: string
+  name: string
+  description: string | null
+}
+
+export interface PropertyContact {
+  id: string
+  property_id: string
+  name: string
+  contact_role: string | null
+  email: string | null
+  phone: string | null
+  notes: string | null
+}
+
+export interface PropertyEntity {
+  id: string
+  property_id: string
+  legal_name: string
+  notes: string | null
+}
+
+export interface PropertyPattern {
+  id: string
+  property_id: string
+  pattern_type: string
+  pattern_text: string
+  confirmed_by_user: boolean
 }
 
 export interface Invoice {
   id: string
   firm_id: string
-  property_id: string
+  property_id: string | null
+  proposed_property_id: string | null
+  property_match_signal: string | null
   vendor_id: string | null
+  proposed_vendor_id: string | null
+  vendor_name: string | null
+  bill_to_entity: string | null
   invoice_number: string | null
   invoice_date: string | null
   due_date: string | null
+  tax_amount: string | null
   total_amount: string | null
   currency: string
+  category: string | null
   status: string
   on_hold_reason: string | null
   rejected_reason: string | null
-  payment_method: string | null
-  paid_at: string | null
-  expense_classification: string
+  extraction_status: string
+  extraction_attempts: number
+  extraction_failure_reason: string | null
+  page_count: number | null
+  pages_extracted: number | null
+  validation_flags: Record<string, unknown> | null
+  duplicate_of_invoice_id: string | null
   intake_source: string
   intake_received_at: string
-}
-
-export interface InvoiceExtraction {
-  invoice_id: string
-  status: string
+  ai_confidence_score: string | null
   ai_provider: string | null
   ai_model_id: string | null
-  ai_confidence_score: string | null
+}
+
+export interface InvoiceLineItem {
+  id: string
+  invoice_id: string
+  description: string
+  amount: string
+  sort_order: number
+}
+
+export interface InvoiceExtractionView {
+  invoice_id: string
+  status: string
+  extraction_status: string
+  ai_provider: string | null
+  ai_model_id: string | null
+  ai_confidence_score: number | null
   ai_extracted_payload: Record<string, unknown> | null
-  ai_field_status: Record<string, string> | null
-  suggested_vendor_id: string | null
+  ai_field_status: Record<string, unknown> | null
+  validation_flags: Record<string, unknown> | null
+  proposed_vendor_id: string | null
+  proposed_property_id: string | null
+  property_match_signal: string | null
+  page_count: number | null
+  pages_extracted: number | null
+}
+
+export interface ExtractionCorrection {
+  vendor_id?: string | null
+  property_id?: string | null
+  vendor_name?: string | null
+  bill_to_entity?: string | null
+  invoice_number?: string | null
+  invoice_date?: string | null
+  due_date?: string | null
+  tax_amount?: string | null
+  total_amount?: string | null
+  currency?: string | null
+  category?: string | null
 }
 
 export interface InvoiceAttachment {
@@ -81,94 +140,25 @@ export interface InvoiceAttachment {
   upload_source: string
 }
 
-export interface Draw {
-  id: string
-  firm_id: string
-  property_id: string
-  loan_id: string
-  budget_id: string | null
-  draw_number: number
-  period_start: string
-  period_end: string
-  status: string
-  revision_number: number
-  submitted_at: string | null
-  funded_at: string | null
-  revision_requested_at: string | null
-  revision_feedback: string | null
-}
-
-export interface DrawItem {
-  id: string
-  draw_id: string
-  invoice_id: string
-  invoice_line_item_id: string | null
-  allocated_amount: string
-  excluded_for_period: boolean
-  deferred_to_next_draw: boolean
-  deferral_reason: string | null
-}
-
-export interface DrawPreflight {
-  ready: boolean
-  blocking_issues: Array<{ vendor_id: string; reason: string }>
-}
-
-export interface DrawPackage {
-  id: string
-  draw_id: string
-  version: number
-  lender_template_id: string | null
-  pdf_attachment_ref: string | null
-  excel_attachment_ref: string | null
-  generated_at: string
-  sent_at: string | null
-}
-
-export interface Budget {
-  id: string
-  firm_id: string
-  property_id: string
-  name: string
-  status: string
-  total_amount: string
-}
-
-export interface PMPin {
-  id: string
-  property_id: string
-  pm_name: string
-  pm_email: string | null
-  is_active: boolean
-  last_used_at: string | null
-  created_at: string
-}
-
 export interface Vendor {
   id: string
   firm_id: string
   name: string
   contact_email: string | null
   contact_phone: string | null
+  address_line1: string | null
+  address_line2: string | null
   city: string | null
   state_region: string | null
-  is_active: boolean
+  postal_code: string | null
+  country: string | null
+  notes: string | null
 }
 
-export interface SignedTokenResponse {
-  token: string
-  jti: string
-  expires_at: string
-}
-
-export interface BudgetLineItem {
+export interface VendorPattern {
   id: string
-  budget_id: string
-  code: string
-  description: string
-  funding_source: string | null
-  sort_order: number
-  original_amount: string
-  retainage_percent: string | null
-  is_contingency: boolean
+  vendor_id: string
+  pattern_type: string
+  pattern_text: string
+  confirmed_by_user: boolean
 }

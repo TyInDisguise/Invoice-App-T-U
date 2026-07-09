@@ -9,14 +9,8 @@ import { PropertyDashboard } from './pages/PropertyDashboard'
 import { Invoices } from './pages/Invoices'
 import { InvoiceDetail } from './pages/InvoiceDetail'
 import { InvoiceReview } from './pages/InvoiceReview'
-import { Draws } from './pages/Draws'
-import { DrawDetail } from './pages/DrawDetail'
-import { PayApp } from './pages/PayApp'
 import { Placeholder } from './pages/Placeholder'
 import { Vendors } from './pages/Vendors'
-import { LenderReceipt } from './pages/portals/LenderReceipt'
-import { PMPortal } from './pages/portals/PMPortal'
-import { VendorCompliance } from './pages/portals/VendorCompliance'
 
 function RequireAuth() {
   const { user, loading } = useAuth()
@@ -27,10 +21,6 @@ function RequireAuth() {
 
 const router = createBrowserRouter([
   { path: '/login', element: <Login /> },
-  // External portals — no firm-user auth gate; each has its own credential flow
-  { path: '/portal/pm/:propertyId', element: <PMPortal /> },
-  { path: '/portal/lender/:token', element: <LenderReceipt /> },
-  { path: '/portal/vendor/:token', element: <VendorCompliance /> },
   {
     path: '/',
     element: <RequireAuth />,
@@ -48,12 +38,6 @@ const router = createBrowserRouter([
             path: 'properties/:propertyId/invoices/:invoiceId',
             element: <InvoiceDetail />,
           },
-          { path: 'properties/:propertyId/draws', element: <Draws /> },
-          {
-            path: 'properties/:propertyId/draws/:drawId',
-            element: <DrawDetail />,
-          },
-          { path: 'properties/:propertyId/pay-app', element: <PayApp /> },
           { path: 'vendors', element: <Vendors /> },
           { path: '*', element: <Placeholder title="Not Found" /> },
         ],

@@ -6,24 +6,20 @@ import type { Invoice, Property } from '../api/types'
 
 /** Master invoice dashboard — firm-wide list with property filter. */
 
-type SegmentKey = 'all' | 'attention' | 'waiting' | 'ready' | 'approved'
+type SegmentKey = 'all' | 'attention' | 'waiting' | 'approved'
 
 const SEGMENT_MATCHERS: Record<SegmentKey, (status: string) => boolean> = {
   all: () => true,
   attention: (s) => s === 'on_hold' || s === 'rejected',
   waiting: (s) => s === 'extraction_review',
-  ready: (s) => s === 'pending_approval',
-  approved: (s) => s === 'approved' || s === 'in_draw' || s === 'paid',
+  approved: (s) => s === 'approved',
 }
 
 const STATUS_TONE: Record<string, { label: string; tone: StatusTone }> = {
   extraction_review: { label: 'AI review', tone: 'ai' },
-  pending_approval: { label: 'Ready', tone: 'ready' },
   approved: { label: 'Approved', tone: 'success' },
   on_hold: { label: 'Hold', tone: 'attention' },
   rejected: { label: 'Rejected', tone: 'danger' },
-  in_draw: { label: 'In draw', tone: 'info' },
-  paid: { label: 'Paid', tone: 'success' },
 }
 
 function money(v: string | null): string {
@@ -66,7 +62,7 @@ export function InvoiceReview() {
 
   const kpis = useMemo(() => {
     const all = invoices ?? []
-    const open = all.filter((i) => i.status !== 'paid' && i.status !== 'rejected')
+    const open = all.filter((i) => i.status !== 'rejected')
     const attention = all.filter((i) => SEGMENT_MATCHERS.attention(i.status))
     const pendingSum = open.reduce(
       (acc, i) => acc + (i.total_amount ? Number(i.total_amount) : 0),
@@ -81,7 +77,6 @@ export function InvoiceReview() {
       { key: 'all', label: 'All', count: all.length },
       { key: 'attention', label: 'Attention', count: all.filter((i) => SEGMENT_MATCHERS.attention(i.status)).length },
       { key: 'waiting', label: 'Waiting', count: all.filter((i) => SEGMENT_MATCHERS.waiting(i.status)).length },
-      { key: 'ready', label: 'Ready', count: all.filter((i) => SEGMENT_MATCHERS.ready(i.status)).length },
       { key: 'approved', label: 'Approved', count: all.filter((i) => SEGMENT_MATCHERS.approved(i.status)).length },
     ]
   }, [invoices])
@@ -209,7 +204,6 @@ export function InvoiceReview() {
         </div>
         <div className="flex items-center gap-sp3">
           <Button variant="secondary" size="sm">Export</Button>
-          <Button size="sm">Stage to draw</Button>
         </div>
       </div>
 
@@ -230,7 +224,7 @@ export function InvoiceReview() {
             <span>Invoice</span>
             <span>Vendor</span>
             <span className="text-center">Property</span>
-            <span>GL</span>
+            <span>Category</span>
             <span>Submitted</span>
             <span className="text-right">Amount</span>
             <span>Status</span>
@@ -249,7 +243,7 @@ export function InvoiceReview() {
           ) : (
             <ul className="flex-1">
               {filtered.map((inv) => {
-                const prop = propertyById[inv.property_id]
+                const prop = inv.property_id ? propertyById[inv.property_id] : undefined
                 const tone = STATUS_TONE[inv.status] ?? { label: inv.status, tone: 'neutral' as StatusTone }
                 const isSelected = selected?.id === inv.id
                 return (
@@ -280,7 +274,9 @@ export function InvoiceReview() {
                       <span className="text-14 text-ink-700 text-center truncate">
                         {prop?.name ?? '—'}
                       </span>
-                      <span className="text-14 text-text-muted whitespace-nowrap">—</span>
+                      <span className="text-14 text-text-muted whitespace-nowrap">
+                        {inv.category ? inv.category.replace(/_/g, ' ') : '—'}
+                      </span>
                       <span className="text-14 text-text-muted tabular-nums whitespace-nowrap">
                         {inv.invoice_date ?? '—'}
                       </span>
@@ -301,7 +297,7 @@ export function InvoiceReview() {
           {selected ? (
             <InvoiceDetailPane
               invoice={selected}
-              property={propertyById[selected.property_id]}
+              property={selected.property_id ? propertyById[selected.property_id] : undefined}
             />
           ) : (
             <div className="p-sp8 text-13 text-text-muted">
@@ -383,8 +379,8 @@ function InvoiceDetailPane({
         <dd className="text-ink-700 tabular-nums">{invoice.invoice_date ?? '—'}</dd>
         <dt className="text-13 text-text-muted">Due</dt>
         <dd className="text-ink-700 tabular-nums">{invoice.due_date ?? '—'}</dd>
-        <dt className="text-13 text-text-muted">Classification</dt>
-        <dd className="text-ink-700">{invoice.expense_classification}</dd>
+        <dt className="text-13 text-text-muted">Category</dt>
+        <dd className="text-ink-700">{invoice.category?.replace(/_/g, ' ') ?? '—'}</dd>
         <dt className="text-13 text-text-muted">Intake</dt>
         <dd className="text-text-muted">{invoice.intake_source.replace(/_/g, ' ')}</dd>
       </dl>

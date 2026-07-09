@@ -1,11 +1,11 @@
 import { Suspense, lazy, useEffect, useMemo, useState } from 'react'
-import { Link, useParams, useSearchParams } from 'react-router-dom'
+import { Link, useParams } from 'react-router-dom'
 import { mutate } from 'swr'
 import { Button, Input, StatusChip, type StatusTone, useToast } from '../components/ui'
 import { useApi } from '../hooks/useApi'
 import { api } from '../api/client'
 import type { FabricPayload } from '../components/AnnotationCanvas'
-import type { Invoice, InvoiceAttachment, InvoiceExtraction } from '../api/types'
+import type { Invoice, InvoiceAttachment, InvoiceExtractionView } from '../api/types'
 
 // Lazy-load the annotation canvas: it pulls in pdfjs-dist + fabric (~700KB
 // minified) which shouldn't be in the main bundle. Users only pay for it
@@ -16,18 +16,14 @@ const AnnotationCanvas = lazy(() =>
   })),
 )
 
-// Status → StatusChip tone. Keeps the Hi-Fi earth-tone palette over wireframe placeholders.
-// Keep in sync with Invoices.tsx + InvoiceReview.tsx. `pending_approval`
-// reads as "ready for the approver to act" — matches the sage-green chip
-// users already know from the review workspace.
+// Status → StatusChip tone. Keeps the Hi-Fi earth-tone palette over wireframe
+// placeholders. Keep in sync with Invoices.tsx + InvoiceReview.tsx. V1 has
+// exactly four invoice statuses (see backend app/services/state_machines.py).
 const STATUS_TONE: Record<string, StatusTone> = {
   extraction_review: 'ai',
-  pending_approval: 'ready',
   approved: 'success',
   on_hold: 'attention',
   rejected: 'danger',
-  paid: 'success',
-  in_draw: 'info',
 }
 
 function toneFor(status: string): StatusTone {
@@ -62,9 +58,9 @@ interface AiField {
   confirmed: boolean
 }
 
-function buildFields(invoice: Invoice, extraction: InvoiceExtraction | undefined): AiField[] {
+function buildFields(invoice: Invoice, extraction: InvoiceExtractionView | undefined): AiField[] {
   const conf = confidenceFromScore(
-    extraction?.ai_confidence_score ? Number(extraction.ai_confidence_score) : null,
+    extraction?.ai_confidence_score != null ? Number(extraction.ai_confidence_score) : null,
   )
   const status = (key: string) => extraction?.ai_field_status?.[key]
   const isConfirmed = (key: string) => status(key) === 'confirmed'
@@ -95,13 +91,13 @@ function buildFields(invoice: Invoice, extraction: InvoiceExtraction | undefined
     },
     {
       label: 'vendor',
-      value: invoice.vendor_id ? 'matched' : 'unmatched',
+      value: invoice.vendor_name ?? (invoice.vendor_id ? 'matched' : 'unmatched'),
       confidence: conf,
       confirmed: Boolean(invoice.vendor_id),
     },
     {
-      label: 'classification',
-      value: invoice.expense_classification,
+      label: 'category',
+      value: invoice.category ? invoice.category.replace(/_/g, ' ') : '—',
       confidence: 'md',
       confirmed: true,
     },
@@ -110,7 +106,6 @@ function buildFields(invoice: Invoice, extraction: InvoiceExtraction | undefined
 
 export function InvoiceDetail() {
   const { propertyId, invoiceId } = useParams<{ propertyId: string; invoiceId: string }>()
-  const [searchParams] = useSearchParams()
   const { toast } = useToast()
 
   const invoicePath = `/properties/${propertyId}/invoices/${invoiceId}`
@@ -118,7 +113,7 @@ export function InvoiceDetail() {
   const attachmentsPath = `${invoicePath}/attachments`
 
   const { data: invoice } = useApi<Invoice>(invoiceId ? invoicePath : null)
-  const { data: extraction } = useApi<InvoiceExtraction>(
+  const { data: extraction } = useApi<InvoiceExtractionView>(
     invoiceId ? extractionPath : null,
   )
   const { data: attachments } = useApi<InvoiceAttachment[]>(
@@ -128,21 +123,11 @@ export function InvoiceDetail() {
   const [holdReason, setHoldReason] = useState('')
   const [reasonOpen, setReasonOpen] = useState<'hold' | 'reject' | null>(null)
 
-  // View selector: standard | payapp. Auto-enables pay-app when the invoice
-  // carries more than one attachment (proxy for multi-vendor packet) or when
-  // classification is capital_expenditure. ?view=payapp forces it.
-  const forcedView = searchParams.get('view')
-  const autoPayApp =
-    (attachments?.length ?? 0) > 1 ||
-    invoice?.expense_classification === 'capital_expenditure'
-  const isPayApp = forcedView === 'payapp' || (forcedView !== 'standard' && autoPayApp)
-
   async function transition(toStatus: string, reason?: string) {
     try {
       await api.post(`${invoicePath}/transition`, {
         to_status: toStatus,
         reason,
-        payment_method: toStatus === 'paid' ? 'check' : undefined,
       })
       toast(`Moved to ${toStatus.replace(/_/g, ' ')}`, 'success')
       setReasonOpen(null)
@@ -153,65 +138,45 @@ export function InvoiceDetail() {
     }
   }
 
-  async function promoteExtraction() {
-    try {
-      await api.post(`${invoicePath}/promote-extraction`)
-      toast('Moved to pending approval', 'success')
-      await mutate(invoicePath)
-    } catch (e) {
-      toast(e instanceof Error ? e.message : 'Promote failed', 'danger')
-    }
+  // Annotation burning has no backend counterpart in V1 (the draw-module
+  // annotate/burn pipeline was dropped along with everything else in that
+  // module) — the canvas still lets a reviewer sketch on the PDF locally,
+  // but there's nowhere to persist it yet.
+  function onBurn(_payload: FabricPayload): Promise<void> {
+    toast('Annotations are not saved in this version', 'warn')
+    return Promise.resolve()
   }
 
-  async function onBurn(payload: FabricPayload) {
-    const original = attachments?.find((a) => a.attachment_type === 'original')
-    if (!original) {
-      toast('No original PDF to annotate', 'danger')
-      return
-    }
-    try {
-      await api.post(`${invoicePath}/annotations/burn`, {
-        attachment_id: original.id,
-        fabric_payload: payload,
-      })
-      toast('Annotated PDF created', 'success')
-      await mutate(attachmentsPath)
-    } catch (e) {
-      toast(e instanceof Error ? e.message : 'Burn failed', 'danger')
-    }
-  }
-
-  // Keyboard shortcuts (A/R/H/E/Enter) — only bind when an invoice is loaded
-  // and no modal reason input is focused.
+  // Keyboard shortcuts (A/H/R) — only bind when an invoice is loaded and no
+  // reason input is focused. Approve/hold/reject are available directly from
+  // extraction_review or on_hold (no intermediate "ready" state in V1).
   useEffect(() => {
     if (!invoice) return
+    const canAct = invoice.status === 'extraction_review' || invoice.status === 'on_hold'
     const handler = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
         return
       }
       if (e.metaKey || e.ctrlKey || e.altKey) return
       const key = e.key.toLowerCase()
-      if (key === 'a' && invoice.status === 'pending_approval') {
+      if (key === 'a' && canAct) {
         e.preventDefault()
         void transition('approved')
-      } else if (key === 'h' && invoice.status === 'pending_approval') {
+      } else if (key === 'h' && canAct) {
         e.preventDefault()
         setReasonOpen('hold')
-      } else if (key === 'r' && invoice.status === 'pending_approval') {
+      } else if (key === 'r' && canAct) {
         e.preventDefault()
         setReasonOpen('reject')
-      } else if (key === 'enter' && invoice.status === 'extraction_review') {
-        e.preventDefault()
-        void promoteExtraction()
       } else if (key === 'escape') {
         setReasonOpen(null)
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-    // `transition` and `promoteExtraction` are recreated every render;
-    // binding on them would rewire the listener on every keystroke. We
-    // intentionally key on the invoice identity + status only.
+    // `transition` is recreated every render; binding on it would rewire the
+    // listener on every keystroke. We intentionally key on the invoice
+    // identity + status only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [invoice?.id, invoice?.status])
 
@@ -231,37 +196,17 @@ export function InvoiceDetail() {
 
   return (
     <div className="flex flex-col bg-paper-0 min-h-[720px] border border-paper-200">
-      <TopBar
-        invoice={invoice}
-        propertyId={propertyId}
-        isPayApp={isPayApp}
-      />
+      <TopBar invoice={invoice} propertyId={propertyId} />
 
-      {isPayApp ? (
-        <PayAppLayout
-          invoice={invoice}
-          attachments={attachments ?? []}
-          pdfUrl={pdfUrl}
-          fields={fields}
-          onBurn={onBurn}
-          onApprove={() => transition('approved')}
-          onHold={() => setReasonOpen('hold')}
-          onReject={() => setReasonOpen('reject')}
-          onPromote={promoteExtraction}
-        />
-      ) : (
-        <StandardLayout
-          invoice={invoice}
-          attachments={attachments ?? []}
-          pdfUrl={pdfUrl}
-          fields={fields}
-          onBurn={onBurn}
-          onApprove={() => transition('approved')}
-          onHold={() => setReasonOpen('hold')}
-          onReject={() => setReasonOpen('reject')}
-          onPromote={promoteExtraction}
-        />
-      )}
+      <StandardLayout
+        invoice={invoice}
+        pdfUrl={pdfUrl}
+        fields={fields}
+        onBurn={onBurn}
+        onApprove={() => transition('approved')}
+        onHold={() => setReasonOpen('hold')}
+        onReject={() => setReasonOpen('reject')}
+      />
 
       {reasonOpen ? (
         <ReasonBar
@@ -281,15 +226,7 @@ export function InvoiceDetail() {
   )
 }
 
-function TopBar({
-  invoice,
-  propertyId,
-  isPayApp,
-}: {
-  invoice: Invoice
-  propertyId: string
-  isPayApp: boolean
-}) {
+function TopBar({ invoice, propertyId }: { invoice: Invoice; propertyId: string }) {
   return (
     <div className="grid grid-cols-[auto_1fr_auto_auto] items-center gap-sp6 px-sp6 py-sp3 border-b border-paper-200 bg-paper-50">
       <Link
@@ -300,7 +237,7 @@ function TopBar({
       </Link>
       <div className="flex items-baseline gap-sp3 min-w-0">
         <span className="font-sans text-16 font-semi text-text truncate">
-          {invoice.vendor_id ? 'Invoice' : 'Unmatched vendor'}
+          {invoice.vendor_name ?? (invoice.vendor_id ? 'Invoice' : 'Unmatched vendor')}
         </span>
         <span className="font-mono text-11 text-text-subtle">
           {invoice.invoice_number ?? '—'}
@@ -319,11 +256,6 @@ function TopBar({
             })}
           </span>
         ) : null}
-        {isPayApp ? (
-          <span className="font-mono text-10 uppercase tracking-[0.1em] text-ai-500 ml-sp2">
-            · pay-app
-          </span>
-        ) : null}
       </div>
       <span className="font-mono text-10 text-text-subtle uppercase tracking-[0.1em]">
         {invoice.intake_source}
@@ -339,7 +271,7 @@ function StandardLayout(props: LayoutProps) {
   const { pdfUrl, fields, onBurn, invoice } = props
   return (
     <div className="grid grid-cols-[60px_minmax(0,1fr)_380px] min-h-[720px]">
-      <ThumbRail pages={1} />
+      <ThumbRail pages={invoice.page_count ?? 1} />
       <div className="bg-paper-50 p-sp5 overflow-auto">
         {pdfUrl ? (
           <Suspense fallback={<PdfLoading />}>
@@ -354,50 +286,20 @@ function StandardLayout(props: LayoutProps) {
   )
 }
 
-function PayAppLayout(props: LayoutProps) {
-  const { pdfUrl, attachments, fields, onBurn, invoice } = props
-  const [activeIndex, setActiveIndex] = useState(0)
-  const subItems = attachments.length > 0 ? attachments : []
-
-  return (
-    <div className="grid grid-cols-[220px_105px_minmax(0,1fr)_360px] min-h-[720px] bg-paper-0">
-      <SubInvoiceList
-        items={subItems}
-        activeIndex={activeIndex}
-        onSelect={setActiveIndex}
-        total={invoice.total_amount}
-      />
-      <SectionedRail count={attachments.length} />
-      <div className="bg-paper-50 p-sp5 overflow-auto border-r border-paper-200">
-        {pdfUrl ? (
-          <Suspense fallback={<PdfLoading />}>
-            <AnnotationCanvas pdfUrl={pdfUrl} onBurn={onBurn} />
-          </Suspense>
-        ) : (
-          <EmptyPdf />
-        )}
-      </div>
-      <AICard {...props} fields={fields} invoice={invoice} packetLevel />
-    </div>
-  )
-}
-
 interface LayoutProps {
   invoice: Invoice
-  attachments: InvoiceAttachment[]
   pdfUrl: string | null
   fields: AiField[]
   onBurn: (payload: FabricPayload) => Promise<void>
   onApprove: () => void
   onHold: () => void
   onReject: () => void
-  onPromote: () => void
 }
 
 function ThumbRail({ pages }: { pages: number }) {
   return (
     <aside className="bg-paper-100 border-r border-paper-200 p-sp2 flex flex-col gap-sp1">
-      {Array.from({ length: pages }).map((_, i) => (
+      {Array.from({ length: Math.max(pages, 1) }).map((_, i) => (
         <div
           key={i}
           className={[
@@ -414,106 +316,19 @@ function ThumbRail({ pages }: { pages: number }) {
   )
 }
 
-function SectionedRail({ count }: { count: number }) {
-  const groups = [
-    { label: 'cover', border: 'border-ink-700', pages: 3 },
-    { label: 'sub', border: 'border-ai-500', pages: Math.max(count, 1) },
-    { label: 'lien', border: 'border-sage-600', pages: 2 },
-    { label: 'coi', border: 'border-warn-500', pages: 1 },
-  ]
-  let pageNum = 1
-  return (
-    <aside className="bg-paper-100 border-r border-paper-200 p-sp2 overflow-y-auto">
-      <div className="flex flex-col gap-sp3 font-mono text-9">
-        {groups.map((g) => (
-          <div key={g.label} className={`pl-sp2 border-l-[3px] ${g.border}`}>
-            <div className="font-mono text-10 uppercase tracking-[0.1em] text-text-subtle mb-sp1">
-              {g.label}
-            </div>
-            <div className="flex flex-wrap gap-sp1">
-              {Array.from({ length: g.pages }).map((_, i) => {
-                const n = pageNum++
-                return (
-                  <span
-                    key={i}
-                    className="w-[18px] h-[22px] grid place-items-center bg-paper-0 border border-paper-300 text-10 text-text-subtle"
-                  >
-                    {n}
-                  </span>
-                )
-              })}
-            </div>
-          </div>
-        ))}
-      </div>
-    </aside>
-  )
-}
-
-function SubInvoiceList({
-  items,
-  activeIndex,
-  onSelect,
-  total,
-}: {
-  items: InvoiceAttachment[]
-  activeIndex: number
-  onSelect: (i: number) => void
-  total: string | null
-}) {
-  return (
-    <aside className="bg-paper-100 border-r border-paper-200 p-sp3 flex flex-col gap-sp2">
-      <div className="font-mono text-10 uppercase tracking-[0.1em] text-text-subtle">
-        Contents · {items.length}
-      </div>
-      <p className="text-12 italic text-text-subtle -mt-sp1">auto-classified at ingest</p>
-      <ul className="flex flex-col gap-sp1">
-        {items.map((att, i) => (
-          <li key={att.id}>
-            <button
-              onClick={() => onSelect(i)}
-              className={[
-                'w-full grid grid-cols-[1fr_auto] gap-sp2 items-baseline',
-                'px-sp2 py-sp1 text-left font-mono text-11 border',
-                i === activeIndex
-                  ? 'bg-paper-0 border-ink-700'
-                  : 'bg-paper-0 border-paper-200 hover:border-paper-300',
-              ].join(' ')}
-            >
-              <span className="truncate text-text">
-                {att.attachment_type.replace(/_/g, ' ')}
-              </span>
-              <span className="text-text-subtle text-10">{att.upload_source}</span>
-            </button>
-          </li>
-        ))}
-      </ul>
-      <div className="flex justify-between items-baseline border-t border-paper-200 pt-sp2 mt-sp2 font-mono text-11">
-        <span className="text-text-subtle uppercase tracking-[0.08em]">total</span>
-        <span className="text-text tabular-nums">{total ?? '—'}</span>
-      </div>
-    </aside>
-  )
-}
-
 function AICard({
   invoice,
   fields,
   onApprove,
   onHold,
   onReject,
-  onPromote,
-  packetLevel,
-}: LayoutProps & { packetLevel?: boolean }) {
-  const canApprove = invoice.status === 'pending_approval'
-  const canPromote = invoice.status === 'extraction_review'
+}: LayoutProps) {
+  const canAct = invoice.status === 'extraction_review' || invoice.status === 'on_hold'
 
   return (
     <aside className="border-l border-paper-200 bg-paper-0 p-sp5 flex flex-col gap-sp4 overflow-y-auto">
       <header>
-        <h2 className="font-display text-18 text-text font-semi">
-          {packetLevel ? 'Sub-invoice summary' : 'Invoice summary'}
-        </h2>
+        <h2 className="font-display text-18 text-text font-semi">Invoice summary</h2>
       </header>
 
       <div className="bg-ai-50 border-l-[3px] border-ai-500 p-sp3 text-13 text-text">
@@ -559,26 +374,12 @@ function AICard({
         </dl>
       </section>
 
-      {canPromote ? (
-        <Button onClick={onPromote} className="w-full">
-          Promote to approval queue ⏎
-        </Button>
-      ) : null}
-
-      {canApprove ? (
-        <>
-          <div className="grid grid-cols-3 gap-sp1">
-            <ActionButton tone="success" label="Approve" kbd="A" onClick={onApprove} />
-            <ActionButton tone="warn" label="Hold" kbd="H" onClick={onHold} />
-            <ActionButton tone="danger" label="Reject" kbd="R" onClick={onReject} />
-          </div>
-          {packetLevel ? (
-            <div className="font-mono text-10 text-text-subtle p-sp2 border border-dashed border-paper-300 bg-paper-50">
-              <span className="text-text-muted font-semi">packet-level</span>
-              <br />⌘+A approves whole packet — enabled when every sub is cleared
-            </div>
-          ) : null}
-        </>
+      {canAct ? (
+        <div className="grid grid-cols-3 gap-sp1">
+          <ActionButton tone="success" label="Approve" kbd="A" onClick={onApprove} />
+          <ActionButton tone="warn" label="Hold" kbd="H" onClick={onHold} />
+          <ActionButton tone="danger" label="Reject" kbd="R" onClick={onReject} />
+        </div>
       ) : null}
     </aside>
   )
