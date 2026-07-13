@@ -1,6 +1,18 @@
 # Handoff — Invoice Processing (V1)
 
-## Status: Backend + frontend scaffolded and contract-aligned. No live DB test yet, no extraction wiring, no auth tests.
+## Status: Backend + frontend running locally end-to-end on mock extraction. Initial migration applied. Anthropic/Sonnet 5 extraction wired (not yet run live). No tests yet. Nothing committed.
+
+## Session update — 2026-07-13 (all changes UNCOMMITTED in git)
+Worked on a fresh machine; stood up local dev from scratch and moved two blocking items.
+
+- **Initial Alembic migration DONE.** Generated against live Postgres and applied: `alembic/versions/9a5403128344_initial_schema.py` (16 tables, all CHECK/unique/index/FK constraints match the models). DB is stamped at this revision. Untracked — commit it. Note: the audit-log Postgres RULE ("Layer 1" in `models/audit.py`) is still NOT written — deferred (pre-production hardening; app-layer Layer 2 guard is active).
+- **Real bug fixed** — `repositories/base.py::create` never mapped `created_by` → the model's `created_by_id` column, so every create endpoint (properties/vendors/invoices/contacts/entities/patterns) 500'd. Added a one-line alias translation (mirrors the existing `firm_scope`→`firm_id` handling).
+- **Anthropic / Claude Sonnet 5 extraction WIRED** (blocking item #3, the real-provider path). New `AnthropicExtractionProvider` in `services/extraction.py`: PDF sent as a base64 `document` block via the Messages API, thinking disabled, tolerant JSON parse (reuses `_parse_fields`/`_parse_line_items`). Plumbed through `config.py` (`anthropic_api_key`, provider `anthropic`, default model `claude-sonnet-5`), `workers/arq_worker.py` factory, `pyproject.toml` (`anthropic==0.116.*`), `.env.example`. To use: set `EXTRACTION_PROVIDER=anthropic` + `ANTHROPIC_API_KEY` in `backend/.env`, restart the worker. **Not yet run against the real API** — verified only with a stub client (parse paths, request shape, error handling, factory). `vision_llm`/Azure Foundry remains the unvalidated bake-off path (decision 9).
+- **Local dev env** — machine now has Node LTS, Python 3.12, Docker Desktop, gh CLI. Demo login created via `/auth/signup`: `admin@example.com` / `DevPassword123!` (firm "Third and Urban"). One property ("123 Main St") + one approved invoice (INV-1001) exist from a manual-upload test; the admin was given a `firm_user_roles` row by direct SQL (no API for role assignment yet).
+
+**Immediate next steps:** (1) commit everything; (2) run one live invoice through the Anthropic provider once a key is available; (3) start the test suite (still zero backend tests).
+
+---
 
 This is a **new repo**, seeded from the older `Invoice-Draw-App` (draw/budget/loan-inclusive) per [`CARRY-OVER-MANIFEST.md`](CARRY-OVER-MANIFEST.md). Scope is invoice intake → AI extraction → human review → approval only. See [`PRODUCT-BRIEF.md`](PRODUCT-BRIEF.md) for intent/workflow and [`research/INVOICE-PROCESSING-ARCHITECTURE-V2.md`](research/INVOICE-PROCESSING-ARCHITECTURE-V2.md) for the 14 locked architecture decisions — read both before making design calls, they're referenced by number throughout the code comments.
 
@@ -9,7 +21,7 @@ This is a **new repo**, seeded from the older `Invoice-Draw-App` (draw/budget/lo
 docker compose up -d          # postgres + redis
 cd backend && pip install -e ".[dev]"
 cp .env.example .env          # EXTRACTION_PROVIDER=mock works with no API key
-alembic upgrade head          # NO MIGRATION EXISTS YET — see "What's blocking" below
+alembic upgrade head          # initial migration now exists (9a5403128344)
 uvicorn app.main:app --reload
 python -m app.workers.arq_worker   # separate terminal, for background extraction jobs
 
