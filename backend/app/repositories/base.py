@@ -55,6 +55,10 @@ class BaseRepo(Generic[ModelT]):
         self._require_scope(firm_scope)
         if self._is_firm_scoped and firm_scope is not None and "firm_id" not in kwargs:
             kwargs["firm_id"] = firm_scope
+        # Ergonomic alias: callers pass created_by (the actor id); the
+        # AuditableMixin column is created_by_id.
+        if "created_by" in kwargs and "created_by_id" not in kwargs:
+            kwargs["created_by_id"] = kwargs.pop("created_by")
         obj = self.model(**kwargs)
         self.session.add(obj)
         await self.session.flush()
