@@ -27,11 +27,16 @@ class Settings(BaseSettings):
     storage_bucket: str | None = None  # Azure: container name
     storage_account_url: str | None = None  # Azure: https://<account>.blob.core.windows.net
 
-    # Extraction provider — mock | vision_llm
+    # Extraction provider — mock | anthropic | vision_llm
+    #   mock       — deterministic test double, no key (local dev / tests)
+    #   anthropic  — Claude via the Anthropic Messages API (the wired real path)
+    #   vision_llm — OpenAI-compatible endpoint (Azure AI Foundry, decision-9
+    #                bake-off — NOT yet validated; see .planning/HANDOFF.md)
     extraction_provider: str = "mock"
-    llm_api_key: str | None = None
+    anthropic_api_key: str | None = None  # anthropic provider
+    llm_api_key: str | None = None  # vision_llm provider
     llm_base_url: str | None = None  # Azure Foundry endpoint, pending decision-9 bake-off
-    llm_extraction_model: str = "claude-opus-4-8"
+    llm_extraction_model: str = "claude-sonnet-5"
     llm_extraction_max_tokens: int = 4096
 
     # Email intake — Microsoft Graph only (ARCHITECTURE-V2 Platforms: Gmail/Nylas dropped)

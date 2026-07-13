@@ -19,6 +19,7 @@ Rewritten against ARCHITECTURE-V2. Key departures from the old pipeline:
 """
 from __future__ import annotations
 
+import base64
 import io
 import json
 import logging
@@ -313,6 +314,134 @@ class VisionExtractionProvider(ExtractionProvider):
                 },
             ],
         }
+
+
+class AnthropicExtractionProvider(ExtractionProvider):
+    """Claude vision extraction via the Anthropic Messages API (decision 9 —
+    the first wired real provider; Azure AI Foundry remains a later bake-off,
+    see .planning/HANDOFF.md).
+
+    Sends the PDF directly as a base64 `document` content block — no OCR / text
+    extraction (decision 1); pypdf only counts pages and slices the first N
+    (decision 14). Extended thinking is disabled: extraction is a bounded,
+    schema-shaped task, so we trade the marginal reasoning gain for predictable
+    latency and cost, and rely on the strict JSON-only system prompt. The
+    response is parsed with the same tolerant `_parse_fields` / `_parse_line_items`
+    path as VisionExtractionProvider, so a messy or truncated document degrades
+    to field-level `ambiguous`/`missing` marks rather than an exception.
+    """
+
+    name = "anthropic"
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model_id: str,
+        max_tokens: int = 4096,
+        client: Any | None = None,
+    ) -> None:
+        if not api_key:
+            raise RuntimeError("AnthropicExtractionProvider requires an API key")
+        self.model_id = model_id
+        self._max_tokens = max_tokens
+        if client is not None:
+            self._client = client
+        else:
+            from anthropic import AsyncAnthropic
+
+            self._client = AsyncAnthropic(api_key=api_key)
+
+    async def extract(
+        self, *, pdf_bytes: bytes, source_hint: str | None = None
+    ) -> ExtractionResult:
+        if not pdf_bytes.startswith(b"%PDF"):
+            raise ExtractionError("input is not a PDF")
+
+        page_count, capped_bytes, pages_extracted = _cap_pages(pdf_bytes, PAGE_CAP)
+        b64 = base64.b64encode(capped_bytes).decode("ascii")
+
+        try:
+            response = await self._client.messages.create(
+                model=self.model_id,
+                max_tokens=self._max_tokens,
+                thinking={"type": "disabled"},
+                system=_SYSTEM_PROMPT.format(page_cap=PAGE_CAP),
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "document",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "application/pdf",
+                                    "data": b64,
+                                },
+                            },
+                            {"type": "text", "text": "Extract this invoice per the schema."},
+                        ],
+                    },
+                ],
+            )
+        except Exception as exc:  # noqa: BLE001 — normalize all transport/API failures
+            raise ExtractionError(f"extraction API call failed: {exc}") from exc
+
+        raw_text = _first_text_block(response)
+        if raw_text is None:
+            raise ExtractionError("model returned no text content")
+
+        try:
+            payload = _loads_json_object(raw_text)
+        except json.JSONDecodeError as exc:
+            raise ExtractionError(f"model did not return valid JSON: {exc}") from exc
+
+        fields = _parse_fields(payload)
+        line_items = _parse_line_items(payload.get("line_items"))
+        property_hints = [str(h) for h in payload.get("property_hints", []) if h]
+
+        usage = getattr(response, "usage", None)
+        return ExtractionResult(
+            provider=self.name,
+            model_id=self.model_id,
+            schema_version=SCHEMA_VERSION,
+            confidence_score=None,
+            fields=fields,
+            line_items=line_items,
+            property_hints=property_hints,
+            page_count=page_count,
+            pages_extracted=pages_extracted,
+            raw_payload={
+                "model_response": payload,
+                "source_hint": source_hint,
+                "input_tokens": getattr(usage, "input_tokens", None),
+                "output_tokens": getattr(usage, "output_tokens", None),
+            },
+        )
+
+
+def _first_text_block(response: Any) -> str | None:
+    for block in getattr(response, "content", []) or []:
+        if getattr(block, "type", None) == "text":
+            return block.text  # type: ignore[no-any-return]
+    return None
+
+
+def _loads_json_object(raw: str) -> dict[str, Any]:
+    """Tolerant parse: strip code fences, then fall back to the outermost
+    {...} span if the model wrapped the object in stray prose."""
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.split("```", 2)[1] if text.count("```") >= 2 else text.strip("`")
+        if text.lstrip().startswith("json"):
+            text = text.lstrip()[4:]
+    try:
+        return json.loads(text)  # type: ignore[no-any-return]
+    except json.JSONDecodeError:
+        start, end = text.find("{"), text.rfind("}")
+        if start != -1 and end > start:
+            return json.loads(text[start : end + 1])  # type: ignore[no-any-return]
+        raise
 
 
 def _cap_pages(pdf_bytes: bytes, cap: int) -> tuple[int, bytes, int]:

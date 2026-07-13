@@ -17,6 +17,7 @@ dependencies = [
   "python-multipart",
   "aiofiles==23.*",
   "pypdf==6.*",  # page count + page-cap slicing only — no text extraction (decision 1)
+  "anthropic==0.116.*",  # Claude extraction provider (decision 9)
   "azure-storage-blob==12.*",
   "azure-identity==1.*",
 ]

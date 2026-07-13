@@ -23,7 +23,11 @@ from app.models.audit import AuditActorType
 from app.models.invoice import Invoice
 from app.repositories.audit import AuditEntryRepo
 from app.services.documents.storage import read_artifact
-from app.services.extraction import MockExtractionProvider, VisionExtractionProvider
+from app.services.extraction import (
+    AnthropicExtractionProvider,
+    MockExtractionProvider,
+    VisionExtractionProvider,
+)
 from app.services.intake import run_extraction
 
 logger = logging.getLogger(__name__)
@@ -46,6 +50,14 @@ async def health_check(ctx: dict[str, Any]) -> dict[str, str]:
 def _build_extraction_provider():  # noqa: ANN202
     if settings.extraction_provider == "mock":
         return MockExtractionProvider()
+    if settings.extraction_provider == "anthropic":
+        if not settings.anthropic_api_key:
+            raise RuntimeError("anthropic provider requires anthropic_api_key")
+        return AnthropicExtractionProvider(
+            api_key=settings.anthropic_api_key,
+            model_id=settings.llm_extraction_model,
+            max_tokens=settings.llm_extraction_max_tokens,
+        )
     if settings.extraction_provider == "vision_llm":
         if not settings.llm_api_key or not settings.llm_base_url:
             raise RuntimeError("vision_llm provider requires llm_api_key and llm_base_url")
