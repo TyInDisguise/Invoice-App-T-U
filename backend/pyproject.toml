@@ -37,3 +37,11 @@ target-version = "py312"
 line-length = 100
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "UP", "B", "DTZ"]
+
+[tool.setuptools.packages.find]
+include = ["app*"]  # exclude tests/ from the installed package (flat-layout disambiguation)
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
