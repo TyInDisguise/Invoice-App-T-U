@@ -1,6 +1,6 @@
 # Handoff — Invoice Processing (V1)
 
-## Status: Backend + frontend running locally end-to-end. Initial migration applied. Anthropic/Sonnet 5 extraction VALIDATED LIVE. Two extraction/validation bugs found via the live run and fixed. No tests yet.
+## Status: Backend + frontend running locally end-to-end. Initial migration applied. Anthropic/Sonnet 5 extraction VALIDATED LIVE. Two extraction/validation bugs found via the live run and fixed. First backend test suite (22 pytest tests) in place. All work committed + pushed.
 
 ## Session update — 2026-07-13 (all changes UNCOMMITTED in git)
 Worked on a fresh machine; stood up local dev from scratch and moved two blocking items.
@@ -21,7 +21,14 @@ First four commits (migration, `created_by` fix, Anthropic provider, prior hando
 ## Design item (not yet built) — broader "re-bill" duplicate detection
 The current fuzzy check only catches an *exact* vendor+invoice#+total resubmission. It will NOT catch the same work re-billed under a *new* invoice number (a real risk). Intended design when this gets built: tiered, advisory-only signals (fits the Proposal Layer / no-auto-accept rule) — e.g. exact-number match = high-confidence dup; same vendor + near-total + no number match = "possible re-bill, review"; same vendor + overlapping line-item descriptions = "possible re-bill" even if totals drift. Do the deterministic tiers first (vendor + amount tolerance + date window); layer an LLM semantic line-item comparison ("is this the same work?") on top later. Keep everything as a reviewer flag, never auto-reject.
 
-**Immediate next steps:** (1) commit the parser + duplicate fixes (extraction.py, validation.py, intake.py, HANDOFF.md — uncommitted); (2) start the test suite (still zero backend tests) — the two bugs just fixed are prime first targets; (3) build the re-bill detection design item above when scoped.
+## Test suite (NEW — `backend/tests/`)
+First backend tests. `pytest` + `pytest-asyncio` (`asyncio_mode=auto`) against a dedicated `<db>_test` Postgres database, provisioned once per session (created if absent, tables from `Base.metadata`); each test runs in a rolled-back transaction so dev data is untouched and tests are isolated. Run: from `backend/`, `.venv\Scripts\python.exe -m pytest`. Requires `pip install -e ".[dev]"` (now needed — added `[tool.setuptools.packages.find] include=["app*"]` so `tests/` doesn't break flat-layout discovery). 22 tests:
+- `test_extraction_parsers.py` — pure unit; the `{value,status}`-envelope recovery for line_items/property_hints + mock provider.
+- `test_validation.py` — DB; duplicate self-exclusion (both directions), totals reconciliation (+ truncated-doc skip), date/currency sanity.
+- `test_repositories.py` — DB; the `created_by`→`created_by_id` alias.
+Verified with a mutation check (reverting the self-exclusion fails the self-flag test). Coverage is deliberately narrow — no router/HTTP-level, auth, intake-orchestration, or state-machine tests yet; those are the next tranche.
+
+**Immediate next steps:** (1) broaden tests — router/HTTP happy-paths (auth, upload→extraction view), intake orchestration, state machine; (2) build the re-bill detection design item above when scoped; (3) still-open pre-prod items from the original backlog (audit-log Postgres RULE, Graph email webhook subscription, Azure Foundry vision bake-off).
 
 ---
 
