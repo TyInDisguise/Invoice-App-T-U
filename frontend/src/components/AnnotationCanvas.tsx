@@ -32,7 +32,10 @@ export function AnnotationCanvas({ pdfUrl, onBurn }: AnnotationCanvasProps) {
     async function load() {
       setError(null)
       try {
-        const loadingTask = pdfjs.getDocument(pdfUrl)
+        // withCredentials: the artifact route is auth-gated (get_current_firm_user
+        // reads the access_token cookie). pdf.js fetches cross-origin (:5173→:8000)
+        // and won't send the cookie unless told to — otherwise the stream 401s.
+        const loadingTask = pdfjs.getDocument({ url: pdfUrl, withCredentials: true })
         const pdf = await loadingTask.promise
         if (cancelled) return
         const page = await pdf.getPage(1)
