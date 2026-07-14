@@ -1,6 +1,6 @@
 # Handoff — Invoice Processing (V1)
 
-## Status: Backend + frontend running locally end-to-end. Initial migration applied. Anthropic/Sonnet 5 extraction VALIDATED LIVE. Two extraction/validation bugs found via the live run and fixed. Backend test suite (29 pytest tests: unit + DB + HTTP) in place. All backend work committed; API tests (efc3008) not yet pushed.
+## Status: Backend + frontend running locally end-to-end. Initial migration applied. Anthropic/Sonnet 5 extraction VALIDATED LIVE. Two extraction/validation bugs found via the live run and fixed. Backend test suite (29 pytest tests: unit + DB + HTTP) in place. All backend work committed AND pushed to origin/main.
 
 ## Session update — 2026-07-13 (all changes UNCOMMITTED in git)
 Worked on a fresh machine; stood up local dev from scratch and moved two blocking items.
@@ -31,7 +31,7 @@ Verified with a mutation check (reverting the self-exclusion fails the self-flag
 
 **Still-untested (next tranche):** upload→extraction-view flow (use MockExtractionProvider — no key/worker needed; override the arq enqueue), intake orchestration (`services/intake.py::receive_invoice`/`run_extraction`), the invoice state machine, and the frontend (near-zero tests; review/approval UI unexercised this session).
 
-**Immediate next steps:** (1) `git push` — commit efc3008 (API tests) is local-only; everything before it is on origin/main. (2) Broaden tests per "Still-untested" above. (3) Build the re-bill detection design item above when scoped. (4) Pre-prod backlog: audit-log Postgres RULE, Graph email webhook subscription, Azure Foundry vision bake-off (decision 9).
+**Immediate next steps:** (1) Broaden tests per "Still-untested" above. (2) Build the re-bill detection design item above when scoped. (3) Pre-prod backlog: audit-log Postgres RULE, Graph email webhook subscription, Azure Foundry vision bake-off (decision 9). (4) Verify the frontend (review/approval UI) against the live backend — unexercised this session.
 
 ## Resuming in a new conversation
 - **Scope status:** V1 core happy-path (intake → live AI extraction → validation → review-ready) is DONE and proven. NOT done: Graph email intake, audit-log RULE, Foundry bake-off, re-bill detection, frontend verification/tests.
