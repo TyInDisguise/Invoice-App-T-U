@@ -270,7 +270,7 @@ class VisionExtractionProvider(ExtractionProvider):
 
         fields = _parse_fields(payload)
         line_items = _parse_line_items(payload.get("line_items"))
-        property_hints = [str(h) for h in payload.get("property_hints", []) if h]
+        property_hints = _parse_property_hints(payload.get("property_hints"))
 
         return ExtractionResult(
             provider=self.name,
@@ -398,7 +398,7 @@ class AnthropicExtractionProvider(ExtractionProvider):
 
         fields = _parse_fields(payload)
         line_items = _parse_line_items(payload.get("line_items"))
-        property_hints = [str(h) for h in payload.get("property_hints", []) if h]
+        property_hints = _parse_property_hints(payload.get("property_hints"))
 
         usage = getattr(response, "usage", None)
         return ExtractionResult(
@@ -513,7 +513,25 @@ def _parse_fields(payload: dict[str, Any]) -> dict[str, ExtractedField]:
     return fields
 
 
+def _unwrap_envelope(raw: Any) -> Any:
+    """Some models apply the per-field {"value","status"} envelope (used for the
+    header fields) to the array fields — line_items / property_hints — as well.
+    Unwrap it so the array is recovered instead of being silently dropped by the
+    isinstance(list) guards below (observed with claude-sonnet-5)."""
+    if isinstance(raw, dict) and "value" in raw:
+        return raw["value"]
+    return raw
+
+
+def _parse_property_hints(raw: Any) -> list[str]:
+    raw = _unwrap_envelope(raw)
+    if not isinstance(raw, list):
+        return []
+    return [str(h) for h in raw if h]
+
+
 def _parse_line_items(raw: Any) -> list[ExtractedLineItem]:
+    raw = _unwrap_envelope(raw)
     if not isinstance(raw, list):
         return []
     items: list[ExtractedLineItem] = []
