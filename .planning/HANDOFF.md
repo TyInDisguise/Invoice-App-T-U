@@ -1,113 +1,84 @@
 # Handoff — Invoice Processing (V1)
 
-## Status: Backend + frontend running locally end-to-end. Initial migration applied. Anthropic/Sonnet 5 extraction VALIDATED LIVE. Two extraction/validation bugs found via the live run and fixed. Backend test suite (29 pytest tests: unit + DB + HTTP) in place. All backend work committed AND pushed to origin/main.
+> **This file is always the current state.** Per-session narratives (the story of
+> how we got here) are archived under [`.planning/archive/`](archive/), one file
+> per session — newest work is summarized here, detail lives there.
 
-## Session update — 2026-07-13 (all changes UNCOMMITTED in git)
-Worked on a fresh machine; stood up local dev from scratch and moved two blocking items.
+## Current status
+Backend + frontend run locally end-to-end. Initial Alembic migration applied. **Anthropic / Claude Sonnet 5 extraction validated live.** Backend test suite (29 pytest tests: unit + DB + HTTP) passing. All backend work committed and pushed to `origin/main`.
 
-- **Initial Alembic migration DONE.** Generated against live Postgres and applied: `alembic/versions/9a5403128344_initial_schema.py` (16 tables, all CHECK/unique/index/FK constraints match the models). DB is stamped at this revision. Untracked — commit it. Note: the audit-log Postgres RULE ("Layer 1" in `models/audit.py`) is still NOT written — deferred (pre-production hardening; app-layer Layer 2 guard is active).
-- **Real bug fixed** — `repositories/base.py::create` never mapped `created_by` → the model's `created_by_id` column, so every create endpoint (properties/vendors/invoices/contacts/entities/patterns) 500'd. Added a one-line alias translation (mirrors the existing `firm_scope`→`firm_id` handling).
-- **Anthropic / Claude Sonnet 5 extraction WIRED** (blocking item #3, the real-provider path). New `AnthropicExtractionProvider` in `services/extraction.py`: PDF sent as a base64 `document` block via the Messages API, thinking disabled, tolerant JSON parse (reuses `_parse_fields`/`_parse_line_items`). Plumbed through `config.py` (`anthropic_api_key`, provider `anthropic`, default model `claude-sonnet-5`), `workers/arq_worker.py` factory, `pyproject.toml` (`anthropic==0.116.*`), `.env.example`. To use: set `EXTRACTION_PROVIDER=anthropic` + `ANTHROPIC_API_KEY` in `backend/.env`, restart the worker. **Not yet run against the real API** — verified only with a stub client (parse paths, request shape, error handling, factory). `vision_llm`/Azure Foundry remains the unvalidated bake-off path (decision 9).
-- **Local dev env** — machine now has Node LTS, Python 3.12, Docker Desktop, gh CLI. Demo login created via `/auth/signup`: `admin@example.com` / `DevPassword123!` (firm "Third and Urban"). One property ("123 Main St") + one approved invoice (INV-1001) exist from a manual-upload test; the admin was given a `firm_user_roles` row by direct SQL (no API for role assignment yet).
+**V1 core happy-path is DONE and proven:** intake → live AI extraction → validation → review-ready. See "Open work" for what remains.
 
-## Session update — 2026-07-13 (later; live-extraction validation + two bug fixes)
-First four commits (migration, `created_by` fix, Anthropic provider, prior handoff) are committed AND pushed to `origin/main`. Then ran the Anthropic path live and fixed what it surfaced. Local git identity set for this repo only: `TyInDisguise <testinglife333@gmail.com>`.
-
-- **Anthropic / Sonnet 5 extraction VALIDATED LIVE.** Ran generated CRE invoices (INV-2087…2090) end-to-end through the real `claude-sonnet-5` API: upload → arq queue → worker → extraction → review-ready. All header fields (vendor, invoice #, dates, tax, total, bill-to, currency, category) extracted correctly against known ground truth. `backend/.env` is set to `EXTRACTION_PROVIDER=anthropic` with a real key (in the gitignored `.env`; do not commit).
-- **Bug fixed — line items & property_hints silently dropped.** Sonnet wraps the array fields (`line_items`, `property_hints`) in the same `{value,status}` envelope it uses for header fields; the parsers (`services/extraction.py`) expected bare arrays, so line items came back `[]` and hints came back as `["value","status"]` (the dict keys). Added `_unwrap_envelope` + `_parse_property_hints`; both parsers now unwrap. Backward-compatible (bare arrays pass through) and benefits the `vision_llm` provider too. Verified live: all 4 line items recovered.
-- **Bug fixed — every invoice self-flagged as a duplicate.** The fuzzy-duplicate query in `services/validation.py::validate` matched on vendor+invoice#+total+date but never excluded the current invoice. Since `run_extraction` (`services/intake.py`) writes the extracted fields onto the invoice row *before* calling `validate` (and SQLAlchemy autoflushes before the SELECT), the query matched the row against itself → `duplicate_suspect` = own id, and `duplicate_of_invoice_id` set to self, for *every* invoice. Latent second bug: with a real duplicate present the query would match 2 rows and `scalar_one_or_none()` would raise, failing extraction. Fix: `validate` now takes `invoice_id`, adds `Invoice.id != invoice_id`, and `.limit(1)`. Verified both directions live — unique invoice → `duplicate_suspect: null`; genuine duplicate (byte-different, same vendor/#/total) → correctly flags the *original*.
-- **Ops gotcha (cost me a stuck job).** Workers had been started from BOTH the venv and the global Python312 across sessions; the global-python workers lack `anthropic`, so when one raced to grab an anthropic job it died mid-flight and left the invoice stuck at `queued`. Always run the worker from `backend/.venv\Scripts\python.exe -m app.workers.arq_worker`, and check for stray workers (`Get-CimInstance Win32_Process -Filter "Name='python.exe'"`) before starting a new one.
-
-## Design item (not yet built) — broader "re-bill" duplicate detection
-The current fuzzy check only catches an *exact* vendor+invoice#+total resubmission. It will NOT catch the same work re-billed under a *new* invoice number (a real risk). Intended design when this gets built: tiered, advisory-only signals (fits the Proposal Layer / no-auto-accept rule) — e.g. exact-number match = high-confidence dup; same vendor + near-total + no number match = "possible re-bill, review"; same vendor + overlapping line-item descriptions = "possible re-bill" even if totals drift. Do the deterministic tiers first (vendor + amount tolerance + date window); layer an LLM semantic line-item comparison ("is this the same work?") on top later. Keep everything as a reviewer flag, never auto-reject.
-
-## Test suite (NEW — `backend/tests/`)
-First backend tests. `pytest` + `pytest-asyncio` (`asyncio_mode=auto`) against a dedicated `<db>_test` Postgres database, provisioned once per session (created if absent, tables from `Base.metadata`); each test runs in a rolled-back transaction so dev data is untouched and tests are isolated. Run: from `backend/`, `.venv\Scripts\python.exe -m pytest`. Requires `pip install -e ".[dev]"` (now needed — added `[tool.setuptools.packages.find] include=["app*"]` so `tests/` doesn't break flat-layout discovery). 22 tests:
-- `test_extraction_parsers.py` — pure unit; the `{value,status}`-envelope recovery for line_items/property_hints + mock provider.
-- `test_validation.py` — DB; duplicate self-exclusion (both directions), totals reconciliation (+ truncated-doc skip), date/currency sanity.
-- `test_repositories.py` — DB; the `created_by`→`created_by_id` alias.
-Verified with a mutation check (reverting the self-exclusion fails the self-flag test).
-- `test_api.py` — HTTP-level via httpx ASGI transport against the app (7 tests): auth flow (signup→me, 401 without cookie, login rejects bad password) and business endpoints (POST /properties & /vendors → 201 — the created_by 500 regression at the request boundary — plus listable-after-create and 422-on-bad-input). Router writes use `async with db.begin()`, so API tests use a **committing** session + per-test TRUNCATE (see `client`/`authed`/`_api_engine` fixtures in conftest), distinct from the rolled-back `db_session` used by the unit/DB tests. Business-endpoint tests stub the `get_current_firm_user` dependency; the three auth-flow tests run the real login path (needs Redis up).
-
-**Still-untested (next tranche):** upload→extraction-view flow (use MockExtractionProvider — no key/worker needed; override the arq enqueue), intake orchestration (`services/intake.py::receive_invoice`/`run_extraction`), the invoice state machine, and the frontend (near-zero tests; review/approval UI unexercised this session).
-
-**Immediate next steps:** (1) Broaden tests per "Still-untested" above. (2) Build the re-bill detection design item above when scoped. (3) Pre-prod backlog: audit-log Postgres RULE, Graph email webhook subscription, Azure Foundry vision bake-off (decision 9). (4) Verify the frontend (review/approval UI) against the live backend — unexercised this session.
-
-## Resuming in a new conversation
-- **Scope status:** V1 core happy-path (intake → live AI extraction → validation → review-ready) is DONE and proven. NOT done: Graph email intake, audit-log RULE, Foundry bake-off, re-bill detection, frontend verification/tests.
-- **Local stack from this session is likely still running** (Docker Postgres/Redis, one venv worker, uvicorn on :8000, Vite on :5173) but a new session won't track those processes — assume you must restart. `backend/.env` has `EXTRACTION_PROVIDER=anthropic` + a real key (gitignored). To run everything mock/no-key instead, set `EXTRACTION_PROVIDER=mock`.
-- **Run the tests:** from `backend/`, `.venv\Scripts\python.exe -m pytest` (needs Docker Postgres up; auto-provisions the `invoice_db_test` database).
-- **Worker gotcha (repeat):** start the worker only from the venv, and kill stray workers first — a global-Python worker lacks `anthropic` and silently strands anthropic jobs at `queued`.
-
----
-
-This is a **new repo**, seeded from the older `Invoice-Draw-App` (draw/budget/loan-inclusive) per [`CARRY-OVER-MANIFEST.md`](CARRY-OVER-MANIFEST.md). Scope is invoice intake → AI extraction → human review → approval only. See [`PRODUCT-BRIEF.md`](PRODUCT-BRIEF.md) for intent/workflow and [`research/INVOICE-PROCESSING-ARCHITECTURE-V2.md`](research/INVOICE-PROCESSING-ARCHITECTURE-V2.md) for the 14 locked architecture decisions — read both before making design calls, they're referenced by number throughout the code comments.
+## Project scope & references
+New repo, seeded from the older `Invoice-Draw-App` (draw/budget/loan-inclusive) per [`CARRY-OVER-MANIFEST.md`](CARRY-OVER-MANIFEST.md). Scope is **invoice intake → AI extraction → human review → approval only.** Read [`PRODUCT-BRIEF.md`](PRODUCT-BRIEF.md) for intent/workflow and [`research/INVOICE-PROCESSING-ARCHITECTURE-V2.md`](research/INVOICE-PROCESSING-ARCHITECTURE-V2.md) for the 14 locked architecture decisions (referenced by number throughout code comments) before making design calls.
 
 ## Run locally
 ```
-docker compose up -d          # postgres + redis
+docker compose up -d          # postgres:16 + redis:7  (use full docker.exe path if not on PATH)
 cd backend && pip install -e ".[dev]"
-cp .env.example .env          # EXTRACTION_PROVIDER=mock works with no API key
-alembic upgrade head          # initial migration now exists (9a5403128344)
-uvicorn app.main:app --reload
-python -m app.workers.arq_worker   # separate terminal, for background extraction jobs
+cp .env.example .env           # EXTRACTION_PROVIDER=mock works with no API key
+alembic upgrade head           # applies 9a5403128344 (initial schema)
+.venv\Scripts\uvicorn.exe app.main:app --reload --port 8000
+.venv\Scripts\python.exe -m app.workers.arq_worker   # separate terminal — see worker gotcha below
 
 cd frontend && npm install && npm run dev
 ```
-Open http://localhost:5173/login
+Open http://localhost:5173/login. **No seed loader** — use `POST /auth/signup` to create the first firm+user (or the existing demo `admin@example.com` / `DevPassword123!` if the dev DB is intact).
 
-**No seed data / no demo user.** There's no seed loader or bootstrap script in this repo (unlike the old one). Use `POST /auth/signup` to create the first firm + user, then log in normally.
+- **Extraction provider:** `backend/.env` currently has `EXTRACTION_PROVIDER=anthropic` + a real key (gitignored). Set `EXTRACTION_PROVIDER=mock` for no-key local/UI work.
+- **Worker gotcha:** start the worker **only** from `backend/.venv\Scripts\python.exe`, and kill stray workers first (`Get-CimInstance Win32_Process -Filter "Name='python.exe'"`) — a global-Python worker lacks `anthropic` and silently strands anthropic jobs at `queued`.
+
+## Tests (`backend/tests/`)
+Run from `backend/`: `.venv\Scripts\python.exe -m pytest` (29 passing). Needs Docker Postgres up; auto-provisions the `<db>_test` database. Requires `pip install -e ".[dev]"`.
+- `test_extraction_parsers.py` — pure unit: `{value,status}`-envelope recovery for line_items/property_hints + mock provider.
+- `test_validation.py` — DB: duplicate self-exclusion (both directions), totals reconciliation (+ truncated-doc skip), date/currency sanity.
+- `test_repositories.py` — DB: the `created_by`→`created_by_id` alias.
+- `test_api.py` — HTTP via httpx ASGI transport: auth flow + create endpoints (the created_by 500 regression at the request boundary), 422-on-bad-input.
+
+Two isolation models in `conftest.py`: unit/DB tests use a rolled-back transaction (`db_session`); HTTP tests use a committing session + per-test TRUNCATE (`client`/`authed`/`_api_engine`) because router writes use `async with db.begin()`.
 
 ## What's built
-
-**Backend** (`backend/app/`) — carried over per the manifest, then models/schemas/routers rewritten against ARCHITECTURE-V2:
-- `models/` — `Invoice`/`InvoiceLineItem`/`InvoiceAttachment` (rewritten: `category` triad replaces `expense_classification`; `proposed_property_id`/`property_match_signal` staging; `extraction_status` separate from business `status`; `validation_flags` JSONB; `page_count`/`pages_extracted` for the 15-page cap), `Vendor`/`VendorPattern`, `Property`/`Portfolio`/`PropertyContact`/`PropertyEntity`/`PropertyPattern`, `FirmUser`/`FirmUserRole` (collapsed to admin-only for V1), `AuditEntry` (append-only), `ApprovalRecord`
-- `services/extraction.py` — `ExtractionProvider` ABC, `MockExtractionProvider` (works with no key), `VisionExtractionProvider` (Azure Foundry vision-LLM path — **not yet wired**, see below)
+**Backend** (`backend/app/`) — models/schemas/routers written against ARCHITECTURE-V2:
+- `models/` — `Invoice`/`InvoiceLineItem`/`InvoiceAttachment` (`category` triad; `proposed_property_id`/`property_match_signal` staging; `extraction_status` separate from business `status`; `validation_flags` JSONB; `page_count`/`pages_extracted` for the 15-page cap), `Vendor`/`VendorPattern`, `Property`/`Portfolio`/`PropertyContact`/`PropertyEntity`/`PropertyPattern`, `FirmUser`/`FirmUserRole` (admin-only for V1), `AuditEntry` (append-only), `ApprovalRecord`
+- `services/extraction.py` — `ExtractionProvider` ABC, `MockExtractionProvider` (no key), **`AnthropicExtractionProvider` (Claude Sonnet 5 — wired + validated live)**, `VisionExtractionProvider` (Azure Foundry path — placeholder body, not yet validated; decision 9 bake-off)
 - `services/intake.py` — dedupe → persist → audit → stage → route-to-review orchestration
-- `services/property_matching.py`, `vendor_matching.py` — proposal-layer matching, mirrors old repo's pattern
+- `services/property_matching.py`, `vendor_matching.py` — proposal-layer matching
 - `services/validation.py` — deterministic checks (totals reconcile, date/currency sanity, duplicate suspect)
-- `services/state_machines.py` — invoice transitions only (no draw/escrow/PM-payment states)
-- `routers/` — `auth`, `properties` (+ portfolios/contacts/entities/patterns), `vendors`, `invoices`, `invoice_intake` (email + manual upload + extraction view/correction + attachments), `artifacts` (document streamer), `audit`
-- Docker Compose (postgres:16 + redis:7), Alembic config (`alembic.ini` + async `env.py`, `target_metadata` wired to `Base.metadata`) — **versions/ dir is empty**
-- `pyproject.toml` — FastAPI/SQLAlchemy 2.0 async/asyncpg/Alembic/JWT/arq/redis/pypdf/azure-storage-blob/azure-identity
+- `services/state_machines.py` — invoice transitions only
+- `routers/` — `auth`, `properties` (+ portfolios/contacts/entities/patterns), `vendors`, `invoices`, `invoice_intake` (email + manual upload + extraction view/correction + attachments), `artifacts`, `audit`
+- Docker Compose (postgres:16 + redis:7); Alembic (`alembic.ini` + async `env.py`) with initial migration `9a5403128344` applied
+- `pyproject.toml` — FastAPI/SQLAlchemy 2.0 async/asyncpg/Alembic/JWT/arq/redis/pypdf/anthropic/azure-storage-blob/azure-identity
 
-**Frontend** (`frontend/src/`) — carried over, then pruned + contract-fixed 2026-07-09:
-- Design tokens, primitives (Button/Table/Modal/Input/Badge/etc.), CommandPalette, StatusChip
+**Frontend** (`frontend/src/`) — carried over, pruned + contract-fixed 2026-07-09:
+- Design tokens, primitives, CommandPalette, StatusChip
 - Pages: `Login`, `Dashboard`, `Properties`, `PropertyDashboard`, `Invoices`, `InvoiceReview`, `InvoiceDetail` (pdf.js + Fabric annotation layer), `Vendors`
-- **Removed** (no backend route left for any of these): `Draws`, `DrawDetail`, `PayApp`, `pages/portals/*` (PM portal, lender receipt, vendor compliance), `PMAccessPanel`, `TokenLinkModal`, `api/tokens.ts`
-- `api/types.ts` rewritten to match the real Pydantic response schemas field-for-field (was stale — carried the old `expense_classification`/`payment_method`/loan/budget/draw shapes)
+- Draw/budget/portal screens removed (no backend route); `api/types.ts` matches the real Pydantic schemas
+- **Unverified this session** — review/approval UI not exercised beyond the API; near-zero frontend tests.
 
-## What's blocking — things only you (or a machine with Docker) can unblock
+## Open work (prioritized)
+1. **Broaden the backend tests** — upload→extraction-view flow (use `MockExtractionProvider`, no key/worker; override the arq enqueue), intake orchestration (`services/intake.py::receive_invoice`/`run_extraction`), the invoice state machine.
+2. **Broader "re-bill" duplicate detection** (design item below) — build when scoped.
+3. **Pre-prod backlog:** audit-log Postgres RULE (`models/audit.py` "Layer 1"); Microsoft Graph email intake (`POST /invoices/intake/email` has a payload shape but no webhook subscription / `clientState` handshake — needs `M365_*`/`INTAKE_MAILBOX`/`GRAPH_WEBHOOK_CLIENT_STATE`); Azure Foundry vision bake-off (decision 9 — `VisionExtractionProvider` body is a placeholder).
+4. **Verify the frontend** (review/approval UI) against the live backend; add frontend tests.
 
-1. **Initial Alembic migration doesn't exist.** `backend/alembic/versions/` only has `.gitkeep`. Needs a live Postgres to autogenerate against:
-   ```
-   docker compose up -d
-   cd backend && alembic revision --autogenerate -m "initial schema"
-   alembic upgrade head
-   ```
-   Sanity-check the generated migration against the 41-ish tables in `app/models/__init__.py` before committing — autogenerate can miss server-side defaults/check-constraints on first pass.
-
-2. **No tests exist yet.** Old repo's tests targeted the old (draw-inclusive) schema and weren't carried over. Backend and frontend both need a test suite written against the current contract. Frontend has 5 test files stubbed (`InvoiceReview`, `Vendors`, `client`, a couple components) — everything else is untested.
-
-3. **`VisionExtractionProvider._build_body`** (`backend/app/services/extraction.py:292`) — the document-content-block format is a placeholder; confirm it against whichever Azure AI Foundry model deployment you land on (decision 9 in the architecture doc calls for a bake-off, not yet run). `EXTRACTION_PROVIDER=mock` is the default and needs no key for local dev/UI work.
-
-4. **Microsoft Graph email intake** — `POST /invoices/intake/email` accepts a payload shape but there's no webhook subscription-creation code or `clientState` validation handshake yet. Needs `M365_TENANT_ID`/`M365_CLIENT_ID`/`M365_CLIENT_SECRET`/`INTAKE_MAILBOX`/`GRAPH_WEBHOOK_CLIENT_STATE` in `.env` plus the Graph subscription setup itself (not started).
+## Design item (not yet built) — broader "re-bill" duplicate detection
+The current fuzzy check only catches an *exact* vendor+invoice#+total resubmission. It will NOT catch the same work re-billed under a *new* invoice number (a real risk). Intended design: tiered, advisory-only signals (fits the Proposal Layer / no-auto-accept rule) — e.g. exact-number match = high-confidence dup; same vendor + near-total + no number match = "possible re-bill, review"; same vendor + overlapping line-item descriptions = "possible re-bill" even if totals drift. Do the deterministic tiers first (vendor + amount tolerance + date window); layer an LLM semantic line-item comparison ("is this the same work?") on top later. Keep everything a reviewer flag, never auto-reject.
 
 ## Known frontend simplifications (flag before shipping)
-
-Made during the 2026-07-09 prune pass, documented here so they don't get mistaken for oversights:
-- **`InvoiceDetail`'s pay-app multi-attachment view mode was removed.** Old repo switched layouts when `attachments.length > 1`; that variant doesn't map to any V1 backend concept, so it's gone — always renders the standard single-document 3-pane layout now. If multi-document invoices become a real V1 need, this needs a real design, not a revert.
-- **`AnnotationCanvas`'s "burn annotation" action has no backend route.** Component kept as a local PDF-markup sketch tool; `onBurn` shows a "not saved in this version" toast instead of calling a dead endpoint. `annotation_json` does exist on the `InvoiceAttachment` model (for markup-on-reject, per PRODUCT-BRIEF), so the wiring is a backend-endpoint job, not a frontend rewrite.
-- **`Vendors.tsx` W-9/COI compliance-doc request flow was stripped** to a plain vendor list — that lifecycle is explicitly excluded from V1 scope per `PRODUCT-BRIEF.md`.
+From the 2026-07-09 prune pass — documented so they aren't mistaken for oversights:
+- **`InvoiceDetail` pay-app multi-attachment view mode removed** — always renders the standard single-document 3-pane layout. Multi-document invoices would need a real design, not a revert.
+- **`AnnotationCanvas` "burn annotation" has no backend route** — `onBurn` shows a "not saved in this version" toast. `annotation_json` exists on `InvoiceAttachment` (markup-on-reject per PRODUCT-BRIEF), so the wiring is a backend-endpoint job.
+- **`Vendors.tsx` W-9/COI compliance-doc flow stripped** to a plain vendor list — that lifecycle is out of V1 scope per PRODUCT-BRIEF.
 
 ## Design system notes
-(Carried over from the old repo — same tokens, same rules.)
+(Carried over — same tokens, same rules.)
 - Fonts: **Geist** (sans), **Instrument Sans** (display), **IBM Plex Mono** (mono only for ⌘K kbd hints, logo mark, status chip labels)
 - `font-mono` banned from numeric cells (dotted zeros complaint)
 - StatusChip: text+dot only, no pill background
 
 ## Reference: old repo
-`Invoice-Draw-App` (github.com/TyInDisguise/Invoice-Draw-App) is frozen as the reference implementation for everything left behind — draws, escrow, budgets, lien waivers, PM portal/payments, lender receipt, signed tokens, document generation (`excel_sov`, `pdf_cover`), notifications engine. Its own `.planning/HANDOFF.md` has the fuller build history (12 phases) if you need to see how a carried-over piece worked before this rewrite. Port from it deliberately, against the confirmed Invoice-record module seam, when the draw module's turn comes — not passively.
+`Invoice-Draw-App` (github.com/TyInDisguise/Invoice-Draw-App) is frozen as the reference implementation for everything left behind — draws, escrow, budgets, lien waivers, PM portal/payments, lender receipt, signed tokens, document generation, notifications engine. Port from it deliberately, against the confirmed Invoice-record module seam, when the draw module's turn comes — not passively.
 
-## Memory
-User's rule on context refresh: refresh at ~300K BUT only if (a) clean handoff exists, (b) distilled handoff is on disk, (c) resume stays under ~20K. This file is the disk handoff.
+## Conventions
+- **Handoff:** this file stays current-only; at each session's end, move that session's narrative into `.planning/archive/HANDOFF-<date>.md` and refresh the sections above.
+- **Context refresh rule:** refresh at ~300K only if (a) a clean handoff exists, (b) it's on disk (this file), (c) resume stays under ~20K.
