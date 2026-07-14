@@ -215,7 +215,9 @@ async def run_extraction(
         ))
 
     # Deterministic validation (decision 4)
-    validation = await validate(db, firm_id=invoice.firm_id, extraction=extraction)
+    validation = await validate(
+        db, firm_id=invoice.firm_id, invoice_id=invoice.id, extraction=extraction
+    )
     invoice.validation_flags = validation.flags
     dup_id = validation.flags.get("duplicate_suspect")
     invoice.duplicate_of_invoice_id = UUID(str(dup_id)) if dup_id else None

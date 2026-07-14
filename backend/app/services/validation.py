@@ -36,6 +36,7 @@ async def validate(
     db: AsyncSession,
     *,
     firm_id: UUID,
+    invoice_id: UUID,
     extraction: ExtractionResult,
 ) -> ValidationResult:
     flags: dict[str, object] = {
@@ -85,13 +86,18 @@ async def validate(
     invoice_number = vals.get("invoice_number")
     if vendor_name and invoice_number and total is not None:
         cutoff = today - timedelta(days=_DUPLICATE_LOOKBACK_DAYS)
-        stmt = select(Invoice.id).where(
-            Invoice.firm_id == firm_id,
-            Invoice.vendor_name == vendor_name,
-            Invoice.invoice_number == invoice_number,
-            Invoice.total_amount == total,
-            Invoice.invoice_date >= cutoff,
-            Invoice.is_active.is_(True),
+        stmt = (
+            select(Invoice.id)
+            .where(
+                Invoice.id != invoice_id,  # never match the invoice against itself
+                Invoice.firm_id == firm_id,
+                Invoice.vendor_name == vendor_name,
+                Invoice.invoice_number == invoice_number,
+                Invoice.total_amount == total,
+                Invoice.invoice_date >= cutoff,
+                Invoice.is_active.is_(True),
+            )
+            .limit(1)  # any one prior match is enough to flag; guards scalar_one_or_none
         )
         existing_id = (await db.execute(stmt)).scalar_one_or_none()
         if existing_id is not None:
