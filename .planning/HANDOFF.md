@@ -1,6 +1,6 @@
 # Handoff — Invoice Processing (V1)
 
-## Status: Backend + frontend running locally end-to-end. Initial migration applied. Anthropic/Sonnet 5 extraction VALIDATED LIVE. Two extraction/validation bugs found via the live run and fixed. First backend test suite (22 pytest tests) in place. All work committed + pushed.
+## Status: Backend + frontend running locally end-to-end. Initial migration applied. Anthropic/Sonnet 5 extraction VALIDATED LIVE. Two extraction/validation bugs found via the live run and fixed. Backend test suite (29 pytest tests: unit + DB + HTTP) in place. All backend work committed; API tests (efc3008) not yet pushed.
 
 ## Session update — 2026-07-13 (all changes UNCOMMITTED in git)
 Worked on a fresh machine; stood up local dev from scratch and moved two blocking items.
@@ -26,9 +26,18 @@ First backend tests. `pytest` + `pytest-asyncio` (`asyncio_mode=auto`) against a
 - `test_extraction_parsers.py` — pure unit; the `{value,status}`-envelope recovery for line_items/property_hints + mock provider.
 - `test_validation.py` — DB; duplicate self-exclusion (both directions), totals reconciliation (+ truncated-doc skip), date/currency sanity.
 - `test_repositories.py` — DB; the `created_by`→`created_by_id` alias.
-Verified with a mutation check (reverting the self-exclusion fails the self-flag test). Coverage is deliberately narrow — no router/HTTP-level, auth, intake-orchestration, or state-machine tests yet; those are the next tranche.
+Verified with a mutation check (reverting the self-exclusion fails the self-flag test).
+- `test_api.py` — HTTP-level via httpx ASGI transport against the app (7 tests): auth flow (signup→me, 401 without cookie, login rejects bad password) and business endpoints (POST /properties & /vendors → 201 — the created_by 500 regression at the request boundary — plus listable-after-create and 422-on-bad-input). Router writes use `async with db.begin()`, so API tests use a **committing** session + per-test TRUNCATE (see `client`/`authed`/`_api_engine` fixtures in conftest), distinct from the rolled-back `db_session` used by the unit/DB tests. Business-endpoint tests stub the `get_current_firm_user` dependency; the three auth-flow tests run the real login path (needs Redis up).
 
-**Immediate next steps:** (1) broaden tests — router/HTTP happy-paths (auth, upload→extraction view), intake orchestration, state machine; (2) build the re-bill detection design item above when scoped; (3) still-open pre-prod items from the original backlog (audit-log Postgres RULE, Graph email webhook subscription, Azure Foundry vision bake-off).
+**Still-untested (next tranche):** upload→extraction-view flow (use MockExtractionProvider — no key/worker needed; override the arq enqueue), intake orchestration (`services/intake.py::receive_invoice`/`run_extraction`), the invoice state machine, and the frontend (near-zero tests; review/approval UI unexercised this session).
+
+**Immediate next steps:** (1) `git push` — commit efc3008 (API tests) is local-only; everything before it is on origin/main. (2) Broaden tests per "Still-untested" above. (3) Build the re-bill detection design item above when scoped. (4) Pre-prod backlog: audit-log Postgres RULE, Graph email webhook subscription, Azure Foundry vision bake-off (decision 9).
+
+## Resuming in a new conversation
+- **Scope status:** V1 core happy-path (intake → live AI extraction → validation → review-ready) is DONE and proven. NOT done: Graph email intake, audit-log RULE, Foundry bake-off, re-bill detection, frontend verification/tests.
+- **Local stack from this session is likely still running** (Docker Postgres/Redis, one venv worker, uvicorn on :8000, Vite on :5173) but a new session won't track those processes — assume you must restart. `backend/.env` has `EXTRACTION_PROVIDER=anthropic` + a real key (gitignored). To run everything mock/no-key instead, set `EXTRACTION_PROVIDER=mock`.
+- **Run the tests:** from `backend/`, `.venv\Scripts\python.exe -m pytest` (needs Docker Postgres up; auto-provisions the `invoice_db_test` database).
+- **Worker gotcha (repeat):** start the worker only from the venv, and kill stray workers first — a global-Python worker lacks `anthropic` and silently strands anthropic jobs at `queued`.
 
 ---
 
